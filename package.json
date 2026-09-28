@@ -1,0 +1,10 @@
+{
+  "name": "taskflow-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lab 03 substitute repo - local only, not pushed to GitHub",
+  "scripts": {
+    "lint": "node lint.js",
+    "test": "node test.js"
+  }
+}
