@@ -24,15 +24,28 @@ pipeline {
             steps {
                 sh 'npm ci'
             }
+            // env.STAGE_NAME ใน post ระดับบนสุด (ท้ายไฟล์) ไม่ได้ชี้ไปที่ stage ที่ fail จริง
+            // มันจะเป็นชื่อ stage สังเคราะห์ "Declarative: Post Actions" เสมอ เพราะ post{} นั้น
+            // รันอยู่ใน context ของตัวเองแยกจาก stage ที่เพิ่ง fail ไป จึงต้องจับชื่อ stage
+            // ไว้เองตอนที่ยังอยู่ใน context ของ stage นั้นจริงๆ (ผ่าน post{failure{}} ของแต่ละ stage)
+            post {
+                failure { script { env.FAILED_STAGE = 'Install' } }
+            }
         }
         stage('Lint') {
             steps {
                 sh 'npm run lint'
             }
+            post {
+                failure { script { env.FAILED_STAGE = 'Lint' } }
+            }
         }
         stage('Unit Test') {
             steps {
                 sh 'npm test'
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'Unit Test' } }
             }
         }
     }
@@ -42,7 +55,7 @@ pipeline {
             echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
         }
         failure {
-            echo "Failed at stage: ${env.STAGE_NAME}"
+            echo "Failed at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}"
         }
         always {
             archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
