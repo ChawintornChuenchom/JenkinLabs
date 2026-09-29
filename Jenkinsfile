@@ -111,12 +111,14 @@ pipeline {
                     sh '''
                         wget -q -O cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
                         chmod +x cosign
-                        ./cosign sign-blob --key "$COSIGN_KEY_FILE" --output-signature sbom.cdx.json.sig --yes sbom.cdx.json
+                        ./cosign sign-blob --key "$COSIGN_KEY_FILE" --bundle sbom.cdx.json.bundle --yes sbom.cdx.json
                     '''
+                    // cosign v3 เลิกใช้ --output-signature (.sig เดี่ยวๆ) แล้ว บังคับให้ใช้
+                    // --bundle แทน ไฟล์ bundle นี้รวมทั้งลายเซ็นและ verification material ไว้ในตัว
                 }
             }
             post {
-                always { archiveArtifacts artifacts: 'sbom.cdx.json,sbom.cdx.json.sig,cosign.pub', allowEmptyArchive: true }
+                always { archiveArtifacts artifacts: 'sbom.cdx.json,sbom.cdx.json.bundle,cosign.pub', allowEmptyArchive: true }
                 failure { script { env.FAILED_STAGE = 'Generate SBOM' } }
             }
         }
