@@ -32,6 +32,10 @@ pipeline {
                 }
                 stage('Ansible Lint') {
                     agent { docker { image 'python:3.12-alpine'; label 'linux-build' } }
+                    // HOME เป็น / ตาม default ของอิมเมจ python ทำให้ pip พยายามเขียน /.local
+                    // ซึ่งเป็น root-owned เขียนไม่ได้ (Jenkins รันด้วย -u 1000:1000) ชี้ HOME มาที่
+                    // workspace เอง (เขียนได้แน่นอน) ก่อน pip install
+                    environment { HOME = "${env.WORKSPACE}" }
                     steps {
                         checkout scm
                         sh 'pip install --quiet ansible-lint==26.9.0 ansible-core==2.19.4'
@@ -110,6 +114,7 @@ pipeline {
 
         stage('Configure with Ansible') {
             agent { docker { image 'python:3.12-alpine'; label 'linux-build' } }
+            environment { HOME = "${env.WORKSPACE}" }
             steps {
                 checkout scm
                 unstash 'tf-outputs'
