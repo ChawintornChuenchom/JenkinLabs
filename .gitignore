@@ -1,0 +1,11 @@
+node_modules/
+coverage/
+reports/
+playwright-report/
+*.tfstate
+*.tfstate.*
+.terraform/
+tfplan
+tfplan.txt
+tf_outputs.json
+*.retry
