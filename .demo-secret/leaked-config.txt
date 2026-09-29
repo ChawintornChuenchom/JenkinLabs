@@ -1,0 +1,5 @@
+# ตัวอย่างการหลุดของ secret สำหรับสาธิต Gitleaks (Lab 06 Task 1)
+# นี่คือ AWS access key ปลอม (ตัวอย่างทางการจาก AWS docs) ไม่ใช่ของจริง
+# ใช้เพื่อทดสอบ Secrets Detection stage เท่านั้น ห้าม merge branch นี้เข้า main/develop
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
