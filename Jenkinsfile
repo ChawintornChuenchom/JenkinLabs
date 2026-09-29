@@ -205,9 +205,17 @@ pipeline {
                 // (พบว่าเวอร์ชัน SonarQube ตอนแรก 9.9.8 LTS เก่าเกินไปจนไม่รองรับ Bearer-token auth
                 // ของ sonar plugin เวอร์ชันใหม่ด้วย ต้องอัปเกรดเป็น community edition 26.9.0 ล่าสุดแทน)
                 // จึงดึง token มาเองตรงๆ ผ่าน withCredentials แล้วส่งเป็น sonar.token (มาตรฐานปัจจุบัน)
+                script {
+                    // SonarQube Community Edition ไม่รองรับ branch analysis จริง (sonar.branch.name
+                    // ใช้ไม่ได้) ทุก branch เลยแชร์ project เดียวกัน "taskflow-lab" ทำให้เวลาหลาย
+                    // branch สแกนใกล้เวลากัน วันที่ analysis อาจ "ย้อนอดีต" เทียบกับ branch อื่นที่
+                    // เพิ่งสแกนไปก่อนหน้า แล้ว SonarQube จะ reject ("cannot rebuild the past")
+                    // แก้ด้วยการแยก project key ต่อ branch ไปเลย ให้แต่ละ branch มี timeline อิสระ
+                    env.SONAR_PROJECT_KEY = "taskflow-lab-${env.BRANCH_NAME.replaceAll('[^A-Za-z0-9_-]', '-')}"
+                }
                 withSonarQubeEnv('SonarQube') {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_TOKEN -Dsonar.host.url=$SONAR_HOST_URL'
+                        sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_TOKEN -Dsonar.host.url=$SONAR_HOST_URL'
                     }
                 }
             }
