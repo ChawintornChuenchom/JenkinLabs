@@ -69,8 +69,13 @@ pipeline {
             steps {
                 checkout scm
                 unstash 'coverage-report'
+                // withSonarQubeEnv ตั้ง SONAR_HOST_URL ให้ถูกต้อง แต่ SONAR_AUTH_TOKEN กลับว่างเปล่า
+                // (เจอจริงตอนทดสอบ - sonar-scanner ตอบ "Not authorized") จึงดึง token มาเองตรงๆ
+                // ผ่าน withCredentials แทนเพื่อการันตีว่ามีค่าแน่นอน
                 withSonarQubeEnv('SonarQube') {
-                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_TOKEN -Dsonar.host.url=$SONAR_HOST_URL'
+                    }
                 }
             }
             post {
