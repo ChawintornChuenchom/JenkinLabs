@@ -1,0 +1,53 @@
+---
+- name: Configure taskflow provisioned host
+  hosts: taskflow
+  become: true
+  # ปิด fact gathering อัตโนมัติไว้ก่อน เพราะ setup module (ที่ gather_facts ใช้) ต้องการ python
+  # บนปลายทาง ซึ่งยังไม่มีจนกว่า raw bootstrap task แรกจะรันเสร็จ
+  gather_facts: false
+  vars:
+    # ใช้ localhost:5001 (ไม่ใช่ host.docker.internal) เพราะ docker pull ที่สั่งผ่าน docker CLI
+    # ในนี้ถูกส่งต่อไปให้ daemon จริงของ host ทำงานแทน (docker-outside-of-docker ผ่าน socket ที่
+    # mount มาจาก Terraform) daemon มองเห็น "localhost:5001" เป็นของตัวเองจริงๆ เลย (registry
+    # อยู่ที่ host จริง) และ Docker ถือว่า localhost เป็น insecure registry โดยอัตโนมัติอยู่แล้ว
+    taskflow_image: "localhost:5001/taskflow-api:{{ taskflow_image_tag | default('bootstrap') }}"
+
+  tasks:
+    # ansible_target เป็นอิมเมจ Alpine เปล่าๆ ไม่มี python3 ติดมา ต้องใช้ raw module
+    # (ไม่ต้องพึ่ง python บนปลายทางเลย) ติดตั้ง python3 ก่อน ให้ module ปกติของ Ansible ใช้งานได้
+    - name: Bootstrap python3 (required by all later Ansible modules)
+      ansible.builtin.raw: apk update && apk add --no-cache python3
+      changed_when: true
+
+    - name: Install Node.js and npm
+      community.general.apk:
+        name:
+          - nodejs
+          - npm
+        update_cache: true
+        state: present
+
+    - name: Install Docker Engine (CLI + engine package)
+      community.general.apk:
+        name: docker
+        state: present
+
+    # หมายเหตุสำคัญ: เคยลองรัน dockerd จริงซ้อนอยู่ข้างในคอนเทนเนอร์นี้ (privileged +
+    # --storage-driver=vfs ฯลฯ) แล้ว แต่ Docker Desktop (Windows/Mac) บล็อก unshare()/mount()
+    # ที่ containerd ต้องใช้ตอนแตก layer เสมอ ต่อให้ privileged แล้วก็ตาม (ข้อจำกัดของ VM ที่
+    # Docker Desktop รันอยู่ ไม่ใช่บั๊กของเรา — บน Linux host จริงจะรัน nested dockerd ได้ปกติ)
+    # แก้ด้วยการ mount /var/run/docker.sock ของ host เข้ามา (docker-outside-of-docker) ผ่าน
+    # Terraform แทน (ดู infra/terraform/main.tf) เป็น pattern เดียวกับที่ Jenkins agent เองใช้อยู่
+    - name: Verify the Docker socket (mounted from host via Terraform) is reachable
+      ansible.builtin.wait_for:
+        path: /var/run/docker.sock
+        timeout: 10
+
+    - name: Install pip and the Docker SDK for Python (needed by community.docker modules)
+      ansible.builtin.raw: apk add --no-cache py3-pip && pip install --break-system-packages --quiet docker
+      changed_when: true
+
+    - name: Pull the taskflow-api image built in Lab 07
+      community.docker.docker_image:
+        name: "{{ taskflow_image }}"
+        source: pull
