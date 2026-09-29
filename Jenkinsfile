@@ -44,6 +44,9 @@ pipeline {
             steps {
                 // jest ถูกตั้งค่าไว้ใน package.json ให้ collectCoverage + ออก junit.xml/cobertura เสมอ
                 sh 'npm test'
+                // เก็บ coverage ไว้ส่งต่อข้าม agent เพราะ stage ถัดไปที่มี agent ของตัวเอง
+                // จะได้ workspace ใหม่เปล่าๆ ไม่เห็นไฟล์จาก stage นี้เลยถ้าไม่ stash
+                stash name: 'coverage-report', includes: 'coverage/**'
             }
             post {
                 always {
@@ -55,14 +58,22 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
+            // sonar-scanner-cli ที่ npx ดาวน์โหลดมาพก JRE แบบ glibc มาด้วย รันบน node:20-alpine
+            // (musl libc) ไม่ได้เลยแม้ลง gcompat แล้วก็ตาม (JVM ต้องการมากกว่าที่ gcompat ให้ได้)
+            // ต้องเปลี่ยนไปใช้ node:20 (Debian, glibc) เฉพาะ stage นี้แทน
+            agent {
+                docker {
+                    image 'node:20'
+                    label 'linux-build'
+                }
+            }
             steps {
-                // sonar-scanner ที่ npx ดาวน์โหลดมาเป็น native binary แบบ glibc แต่ agent
-                // เป็น node:20-alpine (musl libc) เลยรัน java ข้างในไม่ได้ ("not found" ทั้งที่ไฟล์อยู่จริง)
-                // ต้องลง gcompat ให้ก่อนเพื่อให้ Alpine รัน glibc binary ได้
-                sh 'apk add --no-cache gcompat >/dev/null 2>&1 || true'
+                // stage ที่มี agent ของตัวเองจะได้ workspace ใหม่เปล่าๆ เสมอ ต้อง checkout ซ้ำ
+                // แล้วดึง coverage ที่ stash ไว้จาก Unit Test กลับมาด้วย
+                checkout scm
+                unstash 'coverage-report'
                 withSonarQubeEnv('SonarQube') {
-                    sh 'echo "token var present: " $([ -n "$SONAR_AUTH_TOKEN" ] && echo yes || echo no)'
-                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.login=$SONAR_AUTH_TOKEN'
+                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
                 }
             }
             post {
@@ -92,6 +103,8 @@ pipeline {
                 }
             }
             steps {
+                // agent ของ stage นี้ก็เป็น workspace ใหม่เปล่าๆ เหมือนกัน ต้อง checkout ซ้ำ
+                checkout scm
                 sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends docker.io >/dev/null'
                 sh 'docker compose up -d --build'
                 sh 'npm ci'
