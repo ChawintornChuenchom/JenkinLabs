@@ -124,17 +124,17 @@ pipeline {
         }
 
         stage('Configure with Ansible') {
-            agent { docker { image 'python:3.12-alpine'; label 'linux-build' } }
+            // ใช้อิมเมจ alpine/ansible ที่ bundle ansible + openssh-client + collections ที่ต้องใช้
+            // ไว้ให้แล้ว (แก้ layer ตอน build อิมเมจ ด้วยสิทธิ์ root) แทนที่จะ apk add เองตอนรัน
+            // เพราะ apk เองต้องการ root เขียน log (/var/log/apk) เสมอ แม้แค่ apk add ก็ตาม
+            // (exit code 99 "Unable to open log: Permission denied" ที่ Jenkins รันด้วย uid 1000)
+            agent { docker { image 'alpine/ansible:2.21.0'; label 'linux-build' } }
             environment { HOME = "${env.WORKSPACE}" }
             steps {
                 checkout scm
                 unstash 'tf-outputs'
                 withCredentials([sshUserPrivateKey(credentialsId: 'ansible-ssh-key', keyFileVariable: 'ANSIBLE_SSH_KEY')]) {
                     sh '''
-                        export PATH="$HOME/.local/bin:$PATH"
-                        apk add --no-cache openssh-client >/dev/null 2>&1
-                        pip install --quiet ansible-core==2.19.4
-                        ansible-galaxy collection install community.general community.docker >/dev/null 2>&1
                         python3 infra/ansible/tf_to_inventory.py < infra/terraform/tf_outputs.json > inventory.ini
                         cat inventory.ini
                         ansible-playbook -i inventory.ini --private-key "$ANSIBLE_SSH_KEY" \
