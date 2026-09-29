@@ -19,6 +19,126 @@ pipeline {
     }
 
     stages {
+        // ===== Lab 06 — Shift-Left Security Pipeline =====
+        // ลำดับ stage ต้องเป็น secrets -> SAST -> SCA -> SBOM -> policy เสมอ (ก่อน stage build/Install)
+        // เครื่องมือ opa/syft/cosign เป็น static binary ไม่มี shell ติดมาในอิมเมจ (distroless)
+        // ใช้กับ docker.image().inside() ของ Jenkins ไม่ได้เลย (exec เข้าไปไม่ได้ ไม่มี /bin/sh)
+        // จึงดาวน์โหลด binary ตรงๆ ด้วย wget ของ busybox (มีอยู่แล้วใน node:20-alpine โดยไม่ต้อง
+        // apk add ซึ่งจะติด permission denied เพราะ Jenkins บังคับรัน container ด้วย -u 1000:1000)
+        stage('Secrets Detection') {
+            agent { docker { image 'zricethezav/gitleaks:v8.30.1'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh 'gitleaks detect --source . --report-format sarif --report-path gitleaks-report.sarif -v'
+            }
+            post {
+                always { archiveArtifacts artifacts: 'gitleaks-report.sarif', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Secrets Detection' } }
+            }
+        }
+
+        stage('SAST — ESLint') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh 'npm ci'
+                sh 'npx eslint --format json --output-file eslint-report.json src/'
+            }
+            post {
+                always { archiveArtifacts artifacts: 'eslint-report.json', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'SAST — ESLint' } }
+            }
+        }
+
+        stage('SAST — Semgrep') {
+            agent { docker { image 'semgrep/semgrep:1.178.0'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh 'semgrep --config=p/owasp-top-ten --config=p/nodejs --sarif --output=semgrep-report.sarif src/'
+            }
+            post {
+                always { archiveArtifacts artifacts: 'semgrep-report.sarif', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'SAST — Semgrep' } }
+            }
+        }
+
+        stage('SCA — npm audit') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh 'npm ci'
+                script {
+                    // ห้ามให้ exit code ของ npm audit เองฆ่า stage ตรงๆ (blanket exit-zero ไม่ถูกต้อง
+                    // ตามโจทย์) ต้องอ่านค่า critical จาก JSON เองแล้วตัดสินใจ fail/warn เอง
+                    sh 'npm audit --audit-level=high --json > audit.json || true'
+                    def critical = sh(
+                        script: "node -e \"console.log(require('./audit.json').metadata.vulnerabilities.critical)\"",
+                        returnStdout: true
+                    ).trim().toInteger()
+                    if (critical > 0) {
+                        error("Blocking: ${critical} critical vulnerabilities found")
+                    }
+                    echo "SCA passed with 0 critical vulnerabilities (warnings allowed)"
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'audit.json', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'SCA — npm audit' } }
+            }
+        }
+
+        stage('Generate SBOM') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh 'npm ci'
+                sh '''
+                    wget -q -O /usr/local/bin/syft.tar.gz https://github.com/anchore/syft/releases/download/v1.52.0/syft_1.52.0_linux_amd64.tar.gz
+                    tar xzf /usr/local/bin/syft.tar.gz -C /usr/local/bin syft
+                    chmod +x /usr/local/bin/syft
+                    syft scan dir:. -o cyclonedx-json=sbom.cdx.json
+                '''
+                withCredentials([
+                    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
+                    string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+                ]) {
+                    sh '''
+                        wget -q -O /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+                        chmod +x /usr/local/bin/cosign
+                        cosign sign-blob --key "$COSIGN_KEY_FILE" --output-signature sbom.cdx.json.sig --yes sbom.cdx.json
+                    '''
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'sbom.cdx.json,sbom.cdx.json.sig,cosign.pub', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Generate SBOM' } }
+            }
+        }
+
+        stage('Policy Gate') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
+            steps {
+                checkout scm
+                sh '''
+                    wget -q -O /usr/local/bin/opa https://openpolicyagent.org/downloads/v1.21.0/opa_linux_amd64_static
+                    chmod +x /usr/local/bin/opa
+                    opa eval --data policy/security.rego --input audit.json "data.security.deny" --format pretty | tee opa-violations.json
+                    VIOLATIONS=$(opa eval --data policy/security.rego --input audit.json "count(data.security.deny)" --format raw)
+                    echo "Policy violations: $VIOLATIONS"
+                    if [ "$VIOLATIONS" -gt 0 ]; then
+                        echo "Policy Gate: BLOCKED"
+                        exit 1
+                    fi
+                    echo "Policy Gate: PASSED"
+                '''
+            }
+            post {
+                always { archiveArtifacts artifacts: 'opa-violations.json', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Policy Gate' } }
+            }
+        }
+        // ===== จบ Lab 06 =====
+
         stage('Install') {
             agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
