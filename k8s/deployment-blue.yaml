@@ -20,12 +20,6 @@ spec:
       containers:
         - name: taskflow-api
           image: localhost:5001/taskflow-api:bootstrap
-          # ชั่วคราว: จำลอง config ผิดพลาดที่ทำให้ deploy สีนี้พังเฉพาะใน cluster จริง (ไม่กระทบ
-          # docker-compose ที่ใช้ตอน E2E) สำหรับสาธิต automatic rollback ของ Lab 07 task 6
-          # ต้องเอาออกทันทีหลังสาธิตเสร็จ
-          env:
-            - name: CRASH_ON_START
-              value: "true"
           ports:
             - containerPort: 8080
           readinessProbe:
