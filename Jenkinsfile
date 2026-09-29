@@ -57,7 +57,15 @@ pipeline {
         }
 
         stage('Deploy — Production') {
-            when { branch 'main' }
+            // ค่าเริ่มต้นของ Declarative Pipeline คือ beforeInput=false ซึ่งหมายความว่า
+            // stage ที่มีทั้ง when และ input จะเจอ input prompt ถามก่อนที่จะเช็ค when เสียอีก!
+            // (แม้แต่โค้ดตัวอย่างในเอกสารคอร์สเองก็ไม่ได้ใส่ beforeInput ไว้ ทำให้ branch develop
+            // โดนถาม "Deploy to production?" ทั้งที่ควรถูกข้ามไปเพราะไม่ใช่ branch main)
+            // ต้องใส่ beforeInput true เพื่อบังคับให้เช็ค when ก่อนเสมอ
+            when {
+                branch 'main'
+                beforeInput true
+            }
             input {
                 message 'Deploy to production?'
             }
