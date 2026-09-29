@@ -93,7 +93,9 @@ pipeline {
         }
 
         stage('Approval') {
-            agent none
+            // readFile ต้องการ node context เสมอ (agent none ใช้ไม่ได้) ใช้ agent เปล่าบน
+            // linux-build เพราะแค่ต้องอ่านไฟล์ ไม่ต้องมี docker image หนักๆ
+            agent { label 'linux-build' }
             steps {
                 script {
                     def planSummary = readFile('infra/terraform/tfplan.txt')
