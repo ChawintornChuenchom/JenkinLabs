@@ -96,20 +96,22 @@ pipeline {
             steps {
                 checkout scm
                 sh 'npm ci'
+                // ดาวน์โหลด binary ไว้ใน workspace เอง ห้ามเขียนที่ /usr/local/bin เพราะ Jenkins
+                // รัน container ด้วย -u 1000:1000 (ไม่ใช่ root) เขียนโฟลเดอร์ระบบไม่ได้ (Permission denied)
                 sh '''
-                    wget -q -O /usr/local/bin/syft.tar.gz https://github.com/anchore/syft/releases/download/v1.52.0/syft_1.52.0_linux_amd64.tar.gz
-                    tar xzf /usr/local/bin/syft.tar.gz -C /usr/local/bin syft
-                    chmod +x /usr/local/bin/syft
-                    syft scan dir:. -o cyclonedx-json=sbom.cdx.json
+                    wget -q -O syft.tar.gz https://github.com/anchore/syft/releases/download/v1.52.0/syft_1.52.0_linux_amd64.tar.gz
+                    tar xzf syft.tar.gz syft
+                    chmod +x syft
+                    ./syft scan dir:. -o cyclonedx-json=sbom.cdx.json
                 '''
                 withCredentials([
                     file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
                     string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
                 ]) {
                     sh '''
-                        wget -q -O /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
-                        chmod +x /usr/local/bin/cosign
-                        cosign sign-blob --key "$COSIGN_KEY_FILE" --output-signature sbom.cdx.json.sig --yes sbom.cdx.json
+                        wget -q -O cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+                        chmod +x cosign
+                        ./cosign sign-blob --key "$COSIGN_KEY_FILE" --output-signature sbom.cdx.json.sig --yes sbom.cdx.json
                     '''
                 }
             }
@@ -124,10 +126,10 @@ pipeline {
             steps {
                 checkout scm
                 sh '''
-                    wget -q -O /usr/local/bin/opa https://openpolicyagent.org/downloads/v1.21.0/opa_linux_amd64_static
-                    chmod +x /usr/local/bin/opa
-                    opa eval --data policy/security.rego --input audit.json "data.security.deny" --format pretty | tee opa-violations.json
-                    VIOLATIONS=$(opa eval --data policy/security.rego --input audit.json "count(data.security.deny)" --format raw)
+                    wget -q -O opa https://openpolicyagent.org/downloads/v1.21.0/opa_linux_amd64_static
+                    chmod +x opa
+                    ./opa eval --data policy/security.rego --input audit.json "data.security.deny" --format pretty | tee opa-violations.json
+                    VIOLATIONS=$(./opa eval --data policy/security.rego --input audit.json "count(data.security.deny)" --format raw)
                     echo "Policy violations: $VIOLATIONS"
                     if [ "$VIOLATIONS" -gt 0 ]; then
                         echo "Policy Gate: BLOCKED"
