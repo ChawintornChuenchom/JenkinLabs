@@ -11,8 +11,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "express": "4.21.2",
-    "minimist": "0.0.8"
+    "express": "4.21.2"
   },
   "devDependencies": {
     "jest": "29.7.0",
