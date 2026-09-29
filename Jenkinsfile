@@ -112,7 +112,7 @@ pipeline {
                         // เรียกผ่าน host.docker.internal เพราะ container playwright กับ container API
                         // เป็นคนละ container กัน ไม่ได้อยู่ compose network เดียวกัน (--network=host
                         // ใช้ไม่ได้บน Docker Desktop Windows/Mac)
-                        sh 'BASE_URL=http://host.docker.internal:8080 npx playwright test'
+                        sh 'BASE_URL=http://host.docker.internal:18080 npx playwright test'
                     }
                 }
             }
