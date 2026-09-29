@@ -16,6 +16,10 @@ pipeline {
         // ป้องกันไม่ให้ npm ci/test ที่ค้าง (hang) ยึด executor ไว้ตลอดไป
         // ถ้าไม่ตั้ง timeout งาน build เดียวที่ hang จะบล็อกคิวทั้งหมดของ node นี้ไม่มีกำหนด
         timeout(time: 15, unit: 'MINUTES')
+        // stage E2E ผูก port 18080 ตายตัวไว้กับ docker-compose — ถ้ามี build เดียวกัน (branch เดียวกัน)
+        // สองรอบวิ่งพร้อมกัน (เช่น webhook trigger ชนกับการ trigger ด้วยมือ) จะแย่ง port กันจน fail
+        // ปิด concurrent build ของ branch เดียวกันไว้กันปัญหานี้
+        disableConcurrentBuilds()
     }
 
     stages {
