@@ -24,7 +24,6 @@ pipeline {
             steps {
                 checkout scm
                 sh 'npm ci'
-                stash name: 'workspace', useDefaultExcludes: false
             }
             post {
                 always {
@@ -37,7 +36,7 @@ pipeline {
         stage('Lint') {
             agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
-                unstash 'workspace'
+                checkout scm
                 sh 'npm run lint'
             }
             post {
@@ -48,7 +47,7 @@ pipeline {
         stage('Unit Test') {
             agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
-                unstash 'workspace'
+                checkout scm
                 // jest ถูกตั้งค่าไว้ใน package.json ให้ collectCoverage + ออก junit.xml/cobertura เสมอ
                 sh 'npm test'
                 stash name: 'coverage-report', includes: 'coverage/**'
@@ -68,7 +67,7 @@ pipeline {
             // ต้องใช้ node:20 (Debian, glibc) สำหรับ stage นี้โดยเฉพาะ
             agent { docker { image 'node:20'; label 'linux-build' } }
             steps {
-                unstash 'workspace'
+                checkout scm
                 unstash 'coverage-report'
                 withSonarQubeEnv('SonarQube') {
                     sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
@@ -102,7 +101,7 @@ pipeline {
                 }
             }
             steps {
-                unstash 'workspace'
+                checkout scm
                 sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends docker.io >/dev/null'
                 sh 'docker compose up -d --build'
                 sh 'npm ci'
