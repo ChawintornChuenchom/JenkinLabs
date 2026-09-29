@@ -41,7 +41,14 @@ pipeline {
                         sh 'pip install --quiet ansible-lint==26.9.0 ansible-core==2.19.4'
                         // pip ไม่มีสิทธิ์ root เลยติดตั้งแบบ --user โดยอัตโนมัติ ไบนารีเลยไปอยู่ที่
                         // $HOME/.local/bin ซึ่งไม่ได้อยู่ใน PATH ตั้งแต่แรก ต้องเติมเข้าไปเอง
-                        sh 'PATH="$HOME/.local/bin:$PATH" ansible-lint infra/ansible/playbook.yml'
+                        // ansible-lint ต้อง resolve module ให้ครบ (community.general.apk,
+                        // community.docker.docker_image ที่ playbook เราใช้จริง) ต้องลง collection
+                        // พวกนี้ไว้ก่อนด้วย ไม่งั้นจะ error "couldn't resolve module/action"
+                        sh '''
+                            export PATH="$HOME/.local/bin:$PATH"
+                            ansible-galaxy collection install community.general community.docker >/dev/null 2>&1
+                            ansible-lint infra/ansible/playbook.yml
+                        '''
                     }
                 }
             }
