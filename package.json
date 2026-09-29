@@ -2,9 +2,31 @@
   "name": "taskflow-lab",
   "version": "1.0.0",
   "private": true,
-  "description": "Lab 03 substitute repo - local only, not pushed to GitHub",
+  "description": "Lab 03-05 substitute repo - local only, not pushed to GitHub taskflow-api fork",
+  "main": "src/server.js",
   "scripts": {
+    "start": "node src/server.js",
     "lint": "node lint.js",
-    "test": "node test.js"
+    "test": "jest --reporters=default --reporters=jest-junit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "express": "4.21.2"
+  },
+  "devDependencies": {
+    "jest": "29.7.0",
+    "jest-junit": "16.0.0",
+    "supertest": "7.0.0",
+    "@playwright/test": "1.63.0"
+  },
+  "jest": {
+    "collectCoverage": true,
+    "coverageDirectory": "coverage",
+    "coverageReporters": ["text", "cobertura", "lcov"],
+    "testPathIgnorePatterns": ["/node_modules/", "/e2e/"]
+  },
+  "jest-junit": {
+    "outputDirectory": "reports",
+    "outputName": "junit.xml"
   }
 }

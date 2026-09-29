@@ -42,10 +42,69 @@ pipeline {
         }
         stage('Unit Test') {
             steps {
+                // jest ถูกตั้งค่าไว้ใน package.json ให้ collectCoverage + ออก junit.xml/cobertura เสมอ
                 sh 'npm test'
             }
             post {
+                always {
+                    junit testResults: 'reports/junit.xml', allowEmptyResults: true
+                    recordCoverage tools: [[parser: 'COBERTURA', pattern: 'coverage/cobertura-coverage.xml']]
+                }
                 failure { script { env.FAILED_STAGE = 'Unit Test' } }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_AUTH_TOKEN'
+                }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'SonarQube Analysis' } }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'Quality Gate' } }
+            }
+        }
+
+        stage('E2E') {
+            agent {
+                docker {
+                    image 'mcr.microsoft.com/playwright:v1.63.0-noble'
+                    label 'linux-build'
+                    // ต้อง mount docker socket เข้าไปเพราะ image playwright ไม่มี docker CLI ติดมา
+                    // แต่ stage นี้ต้อง `docker compose up -d` เพื่อรัน API จริงก่อนยิง Playwright ใส่
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/run/docker.sock:/run/docker.sock'
+                }
+            }
+            steps {
+                sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends docker.io >/dev/null'
+                sh 'docker compose up -d --build'
+                sh 'npm ci'
+                sh 'BASE_URL=http://localhost:8080 npx playwright test'
+            }
+            post {
+                always {
+                    sh 'docker compose down || true'
+                    junit testResults: 'reports/e2e-junit.xml', allowEmptyResults: true
+                    publishHTML(target: [
+                        reportDir: 'playwright-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Playwright E2E Report',
+                        keepAll: true,
+                        alwaysLinkToLastBuild: true,
+                    ])
+                }
+                failure { script { env.FAILED_STAGE = 'E2E' } }
             }
         }
 
