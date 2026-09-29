@@ -68,6 +68,7 @@ pipeline {
                 }
             }
             steps {
+                sh 'which docker; echo PATH=$PATH; ls -la /usr/bin/docker || true'
                 // stage ที่มี agent ของตัวเองจะได้ workspace ใหม่เปล่าๆ เสมอ ต้อง checkout ซ้ำ
                 // แล้วดึง coverage ที่ stash ไว้จาก Unit Test กลับมาด้วย
                 checkout scm
