@@ -56,8 +56,13 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
+                // sonar-scanner ที่ npx ดาวน์โหลดมาเป็น native binary แบบ glibc แต่ agent
+                // เป็น node:20-alpine (musl libc) เลยรัน java ข้างในไม่ได้ ("not found" ทั้งที่ไฟล์อยู่จริง)
+                // ต้องลง gcompat ให้ก่อนเพื่อให้ Alpine รัน glibc binary ได้
+                sh 'apk add --no-cache gcompat >/dev/null 2>&1 || true'
                 withSonarQubeEnv('SonarQube') {
-                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_AUTH_TOKEN'
+                    sh 'echo "token var present: " $([ -n "$SONAR_AUTH_TOKEN" ] && echo yes || echo no)'
+                    sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.login=$SONAR_AUTH_TOKEN'
                 }
             }
             post {
