@@ -26,7 +26,11 @@ pipeline {
         // จึงดาวน์โหลด binary ตรงๆ ด้วย wget ของ busybox (มีอยู่แล้วใน node:20-alpine โดยไม่ต้อง
         // apk add ซึ่งจะติด permission denied เพราะ Jenkins บังคับรัน container ด้วย -u 1000:1000)
         stage('Secrets Detection') {
-            agent { docker { image 'zricethezav/gitleaks:v8.30.1'; label 'linux-build' } }
+            // อิมเมจ gitleaks ตั้ง ENTRYPOINT เป็น ["gitleaks"] เอง (ไม่ใช่ shell เปล่า) ถ้าไม่ล้าง
+            // entrypoint ออกก่อน คำสั่ง keep-alive "cat" ที่ Jenkins ต่อท้ายให้อัตโนมัติจะกลายเป็น
+            // "gitleaks cat" (แปลว่าสั่ง subcommand cat ให้ gitleaks ซึ่งไม่มีจริง) ทำให้ container
+            // ตายทันทีก่อน Jenkins จะ exec sh เข้าไปได้ (เจอ error "container ... is not running")
+            agent { docker { image 'zricethezav/gitleaks:v8.30.1'; label 'linux-build'; args '--entrypoint=""' } }
             steps {
                 checkout scm
                 sh 'gitleaks detect --source . --report-format sarif --report-path gitleaks-report.sarif -v'
