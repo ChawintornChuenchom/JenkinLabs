@@ -1,12 +1,11 @@
+// agent none ที่ระดับบนสุด + ประกาศ agent ชัดเจนแยกทุก stage
+// เหตุผล: ถ้าตั้ง agent { docker {...} } ไว้ที่ระดับ pipeline แล้วมี stage ใด override เป็น
+// docker image อื่น จะชนบั๊กที่รู้จักกันดีของ Jenkins (JENKINS-30600) — launcher ที่ทำให้ sh
+// รันใน container ถูก "decorate" ผิด ทำให้ stage ที่สลับ image ไม่เจอแม้แต่ docker เอง
+// (เจอจริงตอนทำ Lab 05: SonarQube Analysis ต้องใช้ node:20 ธรรมดา ไม่ใช่ node:20-alpine)
+// วิธีแก้ที่ทางการแนะนำคือให้ทุก stage ประกาศ agent ของตัวเองเสมอ ไม่มี "inherit จาก top-level"
 pipeline {
-    agent {
-        docker {
-            image 'node:20-alpine'
-            // บังคับให้รันบน node linux-build เพราะเป็น node เดียวที่มี Docker CLI/socket
-            // ให้ agent { docker {...} } เรียก docker run ได้จริง
-            label 'linux-build'
-        }
-    }
+    agent none
 
     environment {
         APP_NAME = 'taskflow-lab'
@@ -15,37 +14,43 @@ pipeline {
 
     options {
         // ป้องกันไม่ให้ npm ci/test ที่ค้าง (hang) ยึด executor ไว้ตลอดไป
-        // ถ้าไม่ตั้ง timeout งาน build เดียวที่ hang จะบล็อก queue ทั้งหมดของ node นี้ไม่มีกำหนด
-        timeout(time: 10, unit: 'MINUTES')
+        // ถ้าไม่ตั้ง timeout งาน build เดียวที่ hang จะบล็อกคิวทั้งหมดของ node นี้ไม่มีกำหนด
+        timeout(time: 15, unit: 'MINUTES')
     }
 
     stages {
         stage('Install') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
+                checkout scm
                 sh 'npm ci'
+                stash name: 'workspace', useDefaultExcludes: false
             }
-            // env.STAGE_NAME ใน post ระดับบนสุด (ท้ายไฟล์) ไม่ได้ชี้ไปที่ stage ที่ fail จริง
-            // มันจะเป็นชื่อ stage สังเคราะห์ "Declarative: Post Actions" เสมอ เพราะ post{} นั้น
-            // รันอยู่ใน context ของตัวเองแยกจาก stage ที่เพิ่ง fail ไป จึงต้องจับชื่อ stage
-            // ไว้เองตอนที่ยังอยู่ใน context ของ stage นั้นจริงๆ (ผ่าน post{failure{}} ของแต่ละ stage)
             post {
+                always {
+                    archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
+                }
                 failure { script { env.FAILED_STAGE = 'Install' } }
             }
         }
+
         stage('Lint') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
+                unstash 'workspace'
                 sh 'npm run lint'
             }
             post {
                 failure { script { env.FAILED_STAGE = 'Lint' } }
             }
         }
+
         stage('Unit Test') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
+                unstash 'workspace'
                 // jest ถูกตั้งค่าไว้ใน package.json ให้ collectCoverage + ออก junit.xml/cobertura เสมอ
                 sh 'npm test'
-                // เก็บ coverage ไว้ส่งต่อข้าม agent เพราะ stage ถัดไปที่มี agent ของตัวเอง
-                // จะได้ workspace ใหม่เปล่าๆ ไม่เห็นไฟล์จาก stage นี้เลยถ้าไม่ stash
                 stash name: 'coverage-report', includes: 'coverage/**'
             }
             post {
@@ -60,18 +65,10 @@ pipeline {
         stage('SonarQube Analysis') {
             // sonar-scanner-cli ที่ npx ดาวน์โหลดมาพก JRE แบบ glibc มาด้วย รันบน node:20-alpine
             // (musl libc) ไม่ได้เลยแม้ลง gcompat แล้วก็ตาม (JVM ต้องการมากกว่าที่ gcompat ให้ได้)
-            // ต้องเปลี่ยนไปใช้ node:20 (Debian, glibc) เฉพาะ stage นี้แทน
-            agent {
-                docker {
-                    image 'node:20'
-                    label 'linux-build'
-                }
-            }
+            // ต้องใช้ node:20 (Debian, glibc) สำหรับ stage นี้โดยเฉพาะ
+            agent { docker { image 'node:20'; label 'linux-build' } }
             steps {
-                sh 'which docker; echo PATH=$PATH; ls -la /usr/bin/docker || true'
-                // stage ที่มี agent ของตัวเองจะได้ workspace ใหม่เปล่าๆ เสมอ ต้อง checkout ซ้ำ
-                // แล้วดึง coverage ที่ stash ไว้จาก Unit Test กลับมาด้วย
-                checkout scm
+                unstash 'workspace'
                 unstash 'coverage-report'
                 withSonarQubeEnv('SonarQube') {
                     sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
@@ -83,6 +80,7 @@ pipeline {
         }
 
         stage('Quality Gate') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
@@ -104,8 +102,7 @@ pipeline {
                 }
             }
             steps {
-                // agent ของ stage นี้ก็เป็น workspace ใหม่เปล่าๆ เหมือนกัน ต้อง checkout ซ้ำ
-                checkout scm
+                unstash 'workspace'
                 sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends docker.io >/dev/null'
                 sh 'docker compose up -d --build'
                 sh 'npm ci'
@@ -128,6 +125,7 @@ pipeline {
         }
 
         stage('Deploy — Staging') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             when { branch 'develop' }
             steps {
                 sh 'echo deploying to staging...'
@@ -135,6 +133,7 @@ pipeline {
         }
 
         stage('Deploy — Production') {
+            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
             // ค่าเริ่มต้นของ Declarative Pipeline คือ beforeInput=false ซึ่งหมายความว่า
             // stage ที่มีทั้ง when และ input จะเจอ input prompt ถามก่อนที่จะเช็ค when เสียอีก!
             // (แม้แต่โค้ดตัวอย่างในเอกสารคอร์สเองก็ไม่ได้ใส่ beforeInput ไว้ ทำให้ branch develop
@@ -154,14 +153,12 @@ pipeline {
     }
 
     post {
+        // ไม่มี agent ระดับบนสุดแล้ว (agent none) จึง echo อย่างเดียวพอ ห้ามแตะไฟล์ในนี้
         success {
             echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
         }
         failure {
             echo "Failed at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}"
-        }
-        always {
-            archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
         }
     }
 }
