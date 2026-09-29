@@ -297,7 +297,9 @@ pipeline {
                 // host.docker.internal เพราะ container trivy เป็นคนละ container กับที่รัน docker push
                 // (sibling container ผ่าน docker.sock) เข้าถึง localhost:5001 ของ host ตรงๆ ไม่ได้
                 // ต้อง --insecure เพราะ kind-registry เป็น plain HTTP ไม่มี TLS
-                sh 'trivy image --insecure --exit-code 1 --severity HIGH,CRITICAL --format sarif --output trivy-report.sarif host.docker.internal:5001/taskflow-api:${IMAGE_TAG}'
+                // --cache-dir ชี้เข้า workspace เอง เพราะ default cache dir ของ trivy คือ /.cache
+                // ที่ root ของ container ซึ่ง Jenkins รันด้วย -u 1000:1000 (ไม่ใช่ root) เขียนไม่ได้
+                sh 'trivy image --cache-dir .trivycache --insecure --exit-code 1 --severity HIGH,CRITICAL --format sarif --output trivy-report.sarif host.docker.internal:5001/taskflow-api:${IMAGE_TAG}'
             }
             post {
                 always { archiveArtifacts artifacts: 'trivy-report.sarif', allowEmptyArchive: true }
