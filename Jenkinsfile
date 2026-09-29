@@ -97,21 +97,24 @@ pipeline {
         }
 
         stage('E2E') {
-            agent {
-                docker {
-                    image 'mcr.microsoft.com/playwright:v1.63.0-noble'
-                    label 'linux-build'
-                    // ต้อง mount docker socket เข้าไปเพราะ image playwright ไม่มี docker CLI ติดมา
-                    // แต่ stage นี้ต้อง `docker compose up -d` เพื่อรัน API จริงก่อนยิง Playwright ใส่
-                    args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/run/docker.sock:/run/docker.sock'
-                }
-            }
+            // ไม่ใช้ agent { docker {...} } ตรงนี้ เพราะ image playwright ไม่มี docker CLI ติดมา
+            // และ Jenkins บังคับรัน container ด้วย -u 1000:1000 (ไม่ใช่ root) ทำให้ apt-get
+            // ติดตั้ง docker เข้าไปเองไม่ได้เลย (Permission denied)
+            // ใช้ agent เปล่าบน linux-build (มี docker CLI อยู่แล้ว) รัน docker compose ตรงนั้น
+            // แล้วค่อยเข้า container playwright เฉพาะตอนรัน Playwright เอง ผ่าน docker.image().inside()
+            agent { label 'linux-build' }
             steps {
                 checkout scm
-                sh 'apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends docker.io >/dev/null'
                 sh 'docker compose up -d --build'
-                sh 'npm ci'
-                sh 'BASE_URL=http://localhost:8080 npx playwright test'
+                script {
+                    docker.image('mcr.microsoft.com/playwright:v1.63.0-noble').inside() {
+                        sh 'npm ci'
+                        // เรียกผ่าน host.docker.internal เพราะ container playwright กับ container API
+                        // เป็นคนละ container กัน ไม่ได้อยู่ compose network เดียวกัน (--network=host
+                        // ใช้ไม่ได้บน Docker Desktop Windows/Mac)
+                        sh 'BASE_URL=http://host.docker.internal:8080 npx playwright test'
+                    }
+                }
             }
             post {
                 always {
