@@ -1,0 +1,141 @@
+// Lab 08 — Infrastructure as Code in the Pipeline
+// pipeline แยกต่างหากจาก Jenkinsfile หลัก เพราะ IaC เปลี่ยนแปลงเป็นอิสระจากโค้ดแอป และ apply
+// ต้องผ่าน manual approval เสมอ ไม่ควรปนกับ pipeline CI/CD ของแอปที่รันถี่กว่ามาก
+pipeline {
+    agent none
+
+    options {
+        timeout(time: 20, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(name: 'TASKFLOW_IMAGE_TAG', defaultValue: 'bootstrap', description: 'tag ของ taskflow-api image (จาก Lab 07) ที่จะให้ Ansible pull เข้า provisioned host')
+    }
+
+    stages {
+        stage('IaC Lint & Validate') {
+            failFast true
+            parallel {
+                stage('Terraform Validate') {
+                    agent { docker { image 'hashicorp/terraform:1.16.4'; label 'linux-build'; args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock' } }
+                    steps {
+                        checkout scm
+                        dir('infra/terraform') {
+                            sh 'terraform fmt -check -recursive'
+                            withCredentials([string(credentialsId: 'ansible-ssh-public-key', variable: 'TF_VAR_ansible_ssh_public_key')]) {
+                                sh 'terraform init -backend=false'
+                                sh 'terraform validate'
+                            }
+                        }
+                    }
+                }
+                stage('Ansible Lint') {
+                    agent { docker { image 'python:3.12-alpine'; label 'linux-build' } }
+                    steps {
+                        checkout scm
+                        sh 'pip install --quiet ansible-lint==26.9.0 ansible-core==2.19.4'
+                        sh 'ansible-lint infra/ansible/playbook.yml'
+                    }
+                }
+            }
+        }
+
+        stage('IaC Security Scan') {
+            agent { label 'linux-build' }
+            steps {
+                checkout scm
+                script {
+                    docker.image('aquasec/tfsec:v1.28.14').inside("--entrypoint=''") {
+                        sh 'tfsec infra/terraform --format lovely'
+                    }
+                }
+                script {
+                    docker.image('bridgecrew/checkov:3.3.20').inside("--entrypoint=''") {
+                        sh 'checkov -d infra/terraform --compact'
+                    }
+                }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'IaC Security Scan' } }
+            }
+        }
+
+        stage('Terraform Plan') {
+            agent { docker { image 'hashicorp/terraform:1.16.4'; label 'linux-build'; args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock' } }
+            steps {
+                checkout scm
+                dir('infra/terraform') {
+                    withCredentials([string(credentialsId: 'ansible-ssh-public-key', variable: 'TF_VAR_ansible_ssh_public_key')]) {
+                        sh 'terraform init'
+                        sh 'terraform plan -out=tfplan'
+                        sh 'terraform show -no-color tfplan > tfplan.txt'
+                    }
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'infra/terraform/tfplan,infra/terraform/tfplan.txt', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Terraform Plan' } }
+            }
+        }
+
+        stage('Approval') {
+            agent none
+            steps {
+                script {
+                    def planSummary = readFile('infra/terraform/tfplan.txt')
+                    input message: 'Apply this Terraform plan?', ok: 'Apply', parameters: [text(name: 'PLAN', defaultValue: planSummary, description: 'สรุป plan ก่อน apply')]
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            agent { docker { image 'hashicorp/terraform:1.16.4'; label 'linux-build'; args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock' } }
+            steps {
+                checkout scm
+                dir('infra/terraform') {
+                    withCredentials([string(credentialsId: 'ansible-ssh-public-key', variable: 'TF_VAR_ansible_ssh_public_key')]) {
+                        sh 'terraform init'
+                        sh 'terraform apply -auto-approve tfplan'
+                        sh 'terraform output -json > tf_outputs.json'
+                    }
+                }
+                stash name: 'tf-outputs', includes: 'infra/terraform/tf_outputs.json'
+            }
+            post {
+                always { archiveArtifacts artifacts: 'infra/terraform/tf_outputs.json', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Terraform Apply' } }
+            }
+        }
+
+        stage('Configure with Ansible') {
+            agent { docker { image 'python:3.12-alpine'; label 'linux-build' } }
+            steps {
+                checkout scm
+                unstash 'tf-outputs'
+                withCredentials([sshUserPrivateKey(credentialsId: 'ansible-ssh-key', keyFileVariable: 'ANSIBLE_SSH_KEY')]) {
+                    sh '''
+                        apk add --no-cache openssh-client >/dev/null 2>&1
+                        pip install --quiet ansible-core==2.19.4
+                        ansible-galaxy collection install community.general community.docker >/dev/null 2>&1
+                        python3 infra/ansible/tf_to_inventory.py < infra/terraform/tf_outputs.json > inventory.ini
+                        cat inventory.ini
+                        ansible-playbook -i inventory.ini --private-key "$ANSIBLE_SSH_KEY" \
+                            --ssh-common-args='-o StrictHostKeyChecking=no' \
+                            -e taskflow_image_tag=${TASKFLOW_IMAGE_TAG} \
+                            infra/ansible/playbook.yml
+                    '''
+                }
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'Configure with Ansible' } }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Failed at stage: ${env.FAILED_STAGE ?: 'unknown'}"
+        }
+    }
+}
