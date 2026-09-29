@@ -16,6 +16,10 @@ pipeline {
         // ป้องกันไม่ให้ npm ci/test ที่ค้าง (hang) ยึด executor ไว้ตลอดไป
         // ถ้าไม่ตั้ง timeout งาน build เดียวที่ hang จะบล็อกคิวทั้งหมดของ node นี้ไม่มีกำหนด
         timeout(time: 15, unit: 'MINUTES')
+        // stage E2E ผูก port 18080 ตายตัวไว้กับ docker-compose — ถ้ามี build เดียวกัน (branch เดียวกัน)
+        // สองรอบวิ่งพร้อมกัน (เช่น webhook trigger ชนกับการ trigger ด้วยมือ) จะแย่ง port กันจน fail
+        // ปิด concurrent build ของ branch เดียวกันไว้กันปัญหานี้
+        disableConcurrentBuilds()
     }
 
     stages {
@@ -201,9 +205,17 @@ pipeline {
                 // (พบว่าเวอร์ชัน SonarQube ตอนแรก 9.9.8 LTS เก่าเกินไปจนไม่รองรับ Bearer-token auth
                 // ของ sonar plugin เวอร์ชันใหม่ด้วย ต้องอัปเกรดเป็น community edition 26.9.0 ล่าสุดแทน)
                 // จึงดึง token มาเองตรงๆ ผ่าน withCredentials แล้วส่งเป็น sonar.token (มาตรฐานปัจจุบัน)
+                script {
+                    // SonarQube Community Edition ไม่รองรับ branch analysis จริง (sonar.branch.name
+                    // ใช้ไม่ได้) ทุก branch เลยแชร์ project เดียวกัน "taskflow-lab" ทำให้เวลาหลาย
+                    // branch สแกนใกล้เวลากัน วันที่ analysis อาจ "ย้อนอดีต" เทียบกับ branch อื่นที่
+                    // เพิ่งสแกนไปก่อนหน้า แล้ว SonarQube จะ reject ("cannot rebuild the past")
+                    // แก้ด้วยการแยก project key ต่อ branch ไปเลย ให้แต่ละ branch มี timeline อิสระ
+                    env.SONAR_PROJECT_KEY = "taskflow-lab-${env.BRANCH_NAME.replaceAll('[^A-Za-z0-9_-]', '-')}"
+                }
                 withSonarQubeEnv('SonarQube') {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=taskflow-lab -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_TOKEN -Dsonar.host.url=$SONAR_HOST_URL'
+                        sh 'npx --yes sonarqube-scanner -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.sources=src -Dsonar.tests=tests -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -Dsonar.token=$SONAR_TOKEN -Dsonar.host.url=$SONAR_HOST_URL'
                     }
                 }
             }
@@ -260,32 +272,104 @@ pipeline {
             }
         }
 
-        stage('Deploy — Staging') {
-            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
-            when { branch 'develop' }
+        // ===== Lab 07 — Containers, Image Scanning & Deployment =====
+        // เดิม Deploy — Staging/Production เป็นแค่ echo placeholder จาก Lab 04
+        // ตอนนี้แทนที่ด้วย build image จริง -> Trivy scan -> blue/green deploy บน kind cluster
+        // รันเฉพาะ develop/main เท่านั้น (feature/* ยังเป็นแค่ CI ตามที่ตกลงไว้ตั้งแต่ Lab 04)
+        stage('Build Image') {
+            // ต้องใช้ agent เปล่าบน linux-build (มี docker CLI + เข้าถึง docker.sock อยู่แล้ว)
+            // เพราะ docker build/push เป็นการคุยกับ daemon ตรงๆ ไม่ใช่รันใน container ที่ Jenkins
+            // สร้างให้ (agent { docker {...} } ไม่มี docker CLI ติดมาในอิมเมจ node:20-alpine เอง)
+            agent { label 'linux-build' }
+            when { anyOf { branch 'develop'; branch 'main' } }
             steps {
-                sh 'echo deploying to staging...'
+                checkout scm
+                script {
+                    // ห้าม tag latest — ใช้ short git commit sha เสมอ (immutable, สืบย้อนได้)
+                    env.IMAGE_TAG = env.GIT_COMMIT.take(7)
+                }
+                sh 'docker build -t localhost:5001/taskflow-api:${IMAGE_TAG} .'
+                // push ผ่าน localhost:5001 (host-mapped port ของ kind-registry) เพราะ docker push
+                // เป็น daemon-side operation เสมอ — ต่อให้สั่งจาก container ไหนก็ผ่าน daemon ตัวเดียวกัน
+                // การอ้าง container name ตรงๆ (kind-registry:5000) ใช้ไม่ได้เพราะ daemon เองไม่ได้อยู่
+                // ใน network namespace ของ container ที่เรียก
+                sh 'docker push localhost:5001/taskflow-api:${IMAGE_TAG}'
+            }
+            post {
+                failure { script { env.FAILED_STAGE = 'Build Image' } }
             }
         }
 
-        stage('Deploy — Production') {
-            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
-            // ค่าเริ่มต้นของ Declarative Pipeline คือ beforeInput=false ซึ่งหมายความว่า
-            // stage ที่มีทั้ง when และ input จะเจอ input prompt ถามก่อนที่จะเช็ค when เสียอีก!
-            // (แม้แต่โค้ดตัวอย่างในเอกสารคอร์สเองก็ไม่ได้ใส่ beforeInput ไว้ ทำให้ branch develop
-            // โดนถาม "Deploy to production?" ทั้งที่ควรถูกข้ามไปเพราะไม่ใช่ branch main)
-            // ต้องใส่ beforeInput true เพื่อบังคับให้เช็ค when ก่อนเสมอ
+        stage('Container Scan') {
+            // อิมเมจ trivy ตั้ง ENTRYPOINT เป็น ["trivy"] เอง (บั๊กเดียวกับ gitleaks ใน Lab 06)
+            // ต้องล้าง entrypoint ก่อน ไม่งั้น container ตายก่อน Jenkins exec sh เข้าไปได้
+            agent { docker { image 'aquasec/trivy:0.74.0'; label 'linux-build'; args '--entrypoint=""' } }
+            when { anyOf { branch 'develop'; branch 'main' } }
+            steps {
+                // host.docker.internal เพราะ container trivy เป็นคนละ container กับที่รัน docker push
+                // (sibling container ผ่าน docker.sock) เข้าถึง localhost:5001 ของ host ตรงๆ ไม่ได้
+                // ต้อง --insecure เพราะ kind-registry เป็น plain HTTP ไม่มี TLS
+                // --cache-dir ชี้เข้า workspace เอง เพราะ default cache dir ของ trivy คือ /.cache
+                // ที่ root ของ container ซึ่ง Jenkins รันด้วย -u 1000:1000 (ไม่ใช่ root) เขียนไม่ได้
+                sh 'trivy image --cache-dir .trivycache --insecure --exit-code 1 --severity HIGH,CRITICAL --format sarif --output trivy-report.sarif host.docker.internal:5001/taskflow-api:${IMAGE_TAG}'
+            }
+            post {
+                always { archiveArtifacts artifacts: 'trivy-report.sarif', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Container Scan' } }
+            }
+        }
+
+        stage('Approval') {
+            agent none
             when {
                 branch 'main'
                 beforeInput true
             }
             input {
-                message 'Deploy to production?'
+                message 'Deploy to production (blue/green switch)?'
             }
             steps {
-                sh 'echo deploying to production...'
+                echo 'Approved — proceeding to Blue/Green Deploy'
             }
         }
+
+        stage('Blue/Green Deploy') {
+            agent { label 'linux-build' }
+            when { anyOf { branch 'develop'; branch 'main' } }
+            steps {
+                withCredentials([file(credentialsId: 'k8s-credentials', variable: 'KUBECONFIG')]) {
+                    script {
+                        def current = sh(
+                            script: "/home/jenkins/agent/kubectl get svc taskflow -o jsonpath='{.spec.selector.color}'",
+                            returnStdout: true
+                        ).trim()
+                        def next = (current == 'blue') ? 'green' : 'blue'
+                        env.PREVIOUS_COLOR = current
+                        env.NEXT_COLOR = next
+
+                        sh "/home/jenkins/agent/kubectl set image deployment/taskflow-${next} taskflow-api=localhost:5001/taskflow-api:${env.IMAGE_TAG}"
+                        sh "/home/jenkins/agent/kubectl rollout status deployment/taskflow-${next} --timeout=60s"
+
+                        // smoke test พุ่งตรงไปที่สี next ผ่าน Service เฉพาะสี (taskflow-blue/taskflow-green)
+                        // ข้าม Service หลัก (taskflow) ไปเลย ตามที่โจทย์ต้องการ "bypassing the Service"
+                        sh "/home/jenkins/agent/kubectl run smoke-${BUILD_NUMBER} --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- curl -sf http://taskflow-${next}:8080/health"
+
+                        sh "/home/jenkins/agent/kubectl patch svc taskflow -p '{\"spec\":{\"selector\":{\"color\":\"${next}\"}}}'"
+                        echo "Switched traffic from ${current} to ${next}"
+                    }
+                }
+            }
+            post {
+                failure {
+                    withCredentials([file(credentialsId: 'k8s-credentials', variable: 'KUBECONFIG')]) {
+                        sh "/home/jenkins/agent/kubectl patch svc taskflow -p '{\"spec\":{\"selector\":{\"color\":\"${env.PREVIOUS_COLOR}\"}}}'"
+                    }
+                    echo "Automatic rollback: Service selector restored to ${env.PREVIOUS_COLOR}"
+                    script { env.FAILED_STAGE = 'Blue/Green Deploy' }
+                }
+            }
+        }
+        // ===== จบ Lab 07 =====
     }
 
     post {
