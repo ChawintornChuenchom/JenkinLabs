@@ -18,8 +18,13 @@ pipeline {
         NODE_ENV = 'test'
     }
 
+    // options.timeout ที่ระดับ pipeline นับรวมเวลาที่ค้างรอ input (Approval) ด้วยเสมอ ไม่ใช่แค่
+    // เวลาที่ stage รันจริง (เจอบั๊กจริง: build main ถูก ABORT อัตโนมัติหลังรอ approve เกิน 20
+    // นาที ทั้งที่ stage อัตโนมัติทั้งหมดก่อนหน้ารวมกันใช้เวลาไม่ถึง 5 นาที) ตั้งไว้ยาวพอให้คนกด
+    // approve ทันจริง แทนที่จะตัดทิ้งกลางทาง — ส่วน stage ที่เสี่ยงค้างจริงๆ (rollout, curl) มี
+    // timeout ของตัวเองอยู่แล้วในแต่ละ stage
     options {
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 2, unit: 'HOURS')
         disableConcurrentBuilds()
     }
 
