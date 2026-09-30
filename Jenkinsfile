@@ -165,11 +165,32 @@ pipeline {
             }
         }
 
+        // Lab 09 — เปลี่ยน stage นี้จาก agent { docker {...} } บน linux-build-agent ตัวเดิม (static
+        // container ที่นั่งค้างรอทุก build) มาเป็น agent { kubernetes {...} } แทน — Jenkins จะขอ pod
+        // ใหม่จาก kind cluster ให้ทุกครั้ง รันเสร็จแล้ว pod ถูกทำลายทิ้งทันที (ephemeral จริง)
+        // ต้องเข้า container('node') ให้ตรงชื่อ เพราะ pod มีสอง container (node + jnlp เริ่มต้น)
+        // ถ้าไม่ระบุ sh จะรันใน jnlp container (jenkins/inbound-agent, ไม่มี node ติดตั้ง) แทน
         stage('Lint') {
-            agent { docker { image 'node:20-alpine'; label 'linux-build' } }
+            agent {
+                kubernetes {
+                    label 'k8s-node'
+                    yaml '''
+                        apiVersion: v1
+                        kind: Pod
+                        spec:
+                          containers:
+                          - name: node
+                            image: node:20-alpine
+                            command: ['cat']
+                            tty: true
+                    '''
+                }
+            }
             steps {
                 checkout scm
-                sh 'npm run lint'
+                container('node') {
+                    sh 'npm run lint'
+                }
             }
             post {
                 failure { script { env.FAILED_STAGE = 'Lint' } }
