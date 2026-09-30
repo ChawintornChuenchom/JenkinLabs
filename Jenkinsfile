@@ -267,9 +267,14 @@ pipeline {
                             wget -q -O cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
                             chmod +x cosign
                             ./cosign sign-blob --key "$COSIGN_KEY_FILE" --bundle sbom.cdx.json.bundle --yes sbom.cdx.json
+                            sync
+                            ls -la sbom.cdx.json.bundle
                         '''
                         // cosign v3 เลิกใช้ --output-signature (.sig เดี่ยวๆ) แล้ว บังคับให้ใช้
                         // --bundle แทน ไฟล์ bundle นี้รวมทั้งลายเซ็นและ verification material ไว้ในตัว
+                        // sync ก่อนออกจาก container: เจอ archiveArtifacts พังซ้ำๆ ด้วย "closed at 0
+                        // before bytes were written" เฉพาะไฟล์นี้ (k8s emptyDir + JNLP remoting
+                        // อาจยังไม่ flush เขียนเสร็จจริงตอน container ปิดทันทีหลัง cosign เขียนไฟล์)
                     }
                 }
             }
