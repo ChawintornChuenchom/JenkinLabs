@@ -9,3 +9,11 @@ tfplan
 tfplan.txt
 tf_outputs.json
 *.retry
+mobile/android/key.properties
+*.jks
+*.keystore
+mobile/build/
+mobile/.dart_tool/
+mobile/coverage/
+mobile/android/.gradle/
+mobile/android/app/build/
