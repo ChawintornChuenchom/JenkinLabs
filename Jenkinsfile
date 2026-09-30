@@ -31,9 +31,12 @@ pipeline {
         stage('Secrets Detection') {
             // ใช้ pod ของ Kubernetes cloud (Lab 09) แทน docker agent เดิม — สั่ง command ตรงๆ ใน
             // pod spec ให้ชัดเจน แทนที่จะพึ่ง args '--entrypoint=""' แบบฝั่ง docker-workflow
+            // label ต้องไม่ซ้ำกับ pod อื่นที่ใช้ image คนละตัว — Kubernetes plugin จะ "รวม" pod
+            // template ที่ label เดียวกันเข้าด้วยกัน (เจอบั๊กจริงตอนทดสอบ: SAST — Semgrep ที่ควรได้
+            // container ชื่อ semgrep กลับกลายเป็น node เพราะ label ชนกับ stage อื่นที่ใช้ node:20-alpine)
             agent {
                 kubernetes {
-                    label 'k8s-node'
+                    label 'k8s-gitleaks'
                     yaml '''
                         apiVersion: v1
                         kind: Pod
@@ -157,7 +160,7 @@ pipeline {
                 stage('SAST — Semgrep') {
                     agent {
                         kubernetes {
-                            label 'k8s-node'
+                            label 'k8s-semgrep'
                             yaml '''
                                 apiVersion: v1
                                 kind: Pod
@@ -322,7 +325,7 @@ pipeline {
             // ไม่ได้เลย ต้องใช้ node:20 ธรรมดา (Debian, glibc) สำหรับ pod นี้โดยเฉพาะ
             agent {
                 kubernetes {
-                    label 'k8s-node'
+                    label 'k8s-node-glibc'
                     yaml '''
                         apiVersion: v1
                         kind: Pod
@@ -437,7 +440,7 @@ pipeline {
             // host.docker.internal เหมือน static agent อีกต่อไป
             agent {
                 kubernetes {
-                    label 'k8s-node'
+                    label 'k8s-trivy'
                     yaml '''
                         apiVersion: v1
                         kind: Pod
