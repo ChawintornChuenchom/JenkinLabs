@@ -573,12 +573,23 @@ pipeline {
         }
     }
 
+    // Lab 10 task 5 — เหตุผลเลือก email-ext แทน Slack: ดู comment เดียวกันใน mobile/Jenkinsfile.mobile
     post {
         success {
             echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
+            emailext(
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})",
+                body: "Build SUCCESS\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
         }
         failure {
             echo "Failed at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}"
+            emailext(
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME}) — ${env.FAILED_STAGE ?: env.STAGE_NAME}",
+                body: "Build FAILURE at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
         }
     }
 }

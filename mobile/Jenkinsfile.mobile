@@ -1,0 +1,204 @@
+// Lab 10 (Capstone) task 3 — Flutter/Android pipeline สำหรับ taskflow-mobile
+// ทั้ง pipeline รันในคอนเทนเนอร์ ghcr.io/cirruslabs/flutter:stable ตัวเดียวตลอดทุก stage
+// (ประกาศ agent ที่ระดับ pipeline ไม่ใช่ต่อ stage) เพราะ pub-cache/.gradle ของ Flutter เก็บไว้ใต้
+// $HOME ของคอนเทนเนอร์ ไม่ใช่ workspace ที่ mount มา — ถ้าแยก docker().inside() คนละ stage
+// แต่ละ container จะเป็นคนละ filesystem กัน ทำให้ pub-cache ที่ดาวน์โหลดไว้ใน stage ก่อนหน้าหาย
+// (เจอปัญหานี้จริงตอนทดสอบ: flutter test บ่นหา vector_math/leak_tracker_flutter_testing ไม่เจอ)
+// อีกเรื่อง: อิมเมจนี้ต้องรันเป็น root (args '-u 0:0') — ลองบังคับ non-root แล้ว SDK cache เขียนไม่ได้
+//
+// repo ทั้งก้อน (JenkinLabs) ถูก checkout มาที่ workspace root เสมอ (Jenkinsfile.mobile เป็นแค่
+// scriptPath ของ multibranch job นี้ ไม่ใช่ repo แยก) โปรเจกต์ Flutter จริงๆ อยู่ใต้ mobile/
+// เท่านั้น ทุก stage จึงต้อง dir('mobile') { ... } ครอบเสมอ ไม่งั้น flutter pub get จะหา
+// pubspec.yaml ไม่เจอ ("Expected to find project root in current working directory")
+pipeline {
+    agent {
+        docker {
+            label 'linux-build'
+            image 'ghcr.io/cirruslabs/flutter:stable'
+            args '-u 0:0'
+        }
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        booleanParam(name: 'ENABLE_DISTRIBUTE', defaultValue: false, description: 'เปิด stage Distribute (ต้องมี Firebase/Play Store credentials ก่อน) — ปิดเป็นค่าเริ่มต้นเสมอ')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Dependencies') {
+            steps {
+                dir('mobile') {
+                    sh 'flutter pub get --enforce-lockfile'
+                }
+            }
+        }
+
+        // ไม่มีตัวไหนใน 2 stage นี้ต้องพึ่งผลลัพธ์ของกันและกัน รันพร้อมกันได้เหมือน "Verify" ใน
+        // Jenkinsfile หลักของ taskflow-api
+        stage('Quality') {
+            failFast false
+            parallel {
+                stage('Analyze') {
+                    steps {
+                        dir('mobile') {
+                            sh 'flutter analyze --fatal-infos --fatal-warnings'
+                        }
+                    }
+                    post {
+                        failure { script { env.FAILED_STAGE = 'Analyze' } }
+                    }
+                }
+                stage('Format Check') {
+                    steps {
+                        dir('mobile') {
+                            sh 'dart format --set-exit-if-changed lib test'
+                        }
+                    }
+                    post {
+                        failure { script { env.FAILED_STAGE = 'Format Check' } }
+                    }
+                }
+            }
+        }
+
+        stage('Test & Coverage') {
+            steps {
+                dir('mobile') {
+                    sh 'flutter test --coverage'
+                    // ตาม errata ของ lab: "dart pub global activate cobertura" ยังมีอยู่จริง (ทดสอบแล้ว)
+                    // ใช้แปลง lcov -> cobertura XML ให้ Jenkins Coverage plugin (recordCoverage) อ่านได้
+                    sh '''
+                        dart pub global activate cobertura
+                        export PATH="$PATH:$HOME/.pub-cache/bin"
+                        cobertura convert -i coverage/lcov.info -o coverage/cobertura.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    recordCoverage tools: [[parser: 'COBERTURA', pattern: 'mobile/coverage/cobertura.xml']]
+                    archiveArtifacts artifacts: 'mobile/coverage/lcov.info,mobile/coverage/cobertura.xml', allowEmptyArchive: true
+                }
+                failure { script { env.FAILED_STAGE = 'Test & Coverage' } }
+            }
+        }
+
+        stage('Security — SCA') {
+            steps {
+                dir('mobile') {
+                    sh '''
+                        wget -q -O osv-scanner https://github.com/google/osv-scanner/releases/download/v2.2.3/osv-scanner_linux_amd64
+                        chmod +x osv-scanner
+                        ./osv-scanner scan source -L pubspec.lock --format table
+                    '''
+                    sh '''
+                        wget -q -O trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+                        tar xzf trivy.tar.gz trivy
+                        chmod +x trivy
+                        ./trivy fs --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --format json --output trivy-mobile-report.json .
+                    '''
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'mobile/trivy-mobile-report.json', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Security — SCA' } }
+            }
+        }
+
+        stage('Build Debug APK') {
+            steps {
+                dir('mobile') {
+                    sh 'flutter build apk --debug'
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: 'mobile/build/app/outputs/flutter-apk/app-debug.apk', allowEmptyArchive: true }
+                failure { script { env.FAILED_STAGE = 'Build Debug APK' } }
+            }
+        }
+
+        // เฉพาะ main เท่านั้นที่ sign ด้วย release key จริง — สร้าง android/key.properties จาก
+        // Jenkins credentials ชั่วคราวตอน build แล้วลบทิ้งเสมอใน post { cleanup } ห้ามหลงเหลือใน
+        // workspace หรือหลุดไปโผล่ใน console log เด็ดขาด (ดู build.gradle.kts: ถ้าไม่มีไฟล์นี้จะ
+        // fallback ไป debug signing เอง ไม่ทำให้ branch อื่นพัง)
+        stage('Build Release AAB (signed)') {
+            when { branch 'main' }
+            steps {
+                dir('mobile') {
+                    withCredentials([
+                        file(credentialsId: 'android-keystore', variable: 'KEYSTORE_FILE'),
+                        string(credentialsId: 'android-store-password', variable: 'STORE_PASSWORD'),
+                        string(credentialsId: 'android-key-password', variable: 'KEY_PASSWORD'),
+                        string(credentialsId: 'android-key-alias', variable: 'KEY_ALIAS')
+                    ]) {
+                        sh '''
+                            cp "$KEYSTORE_FILE" android/app/release.jks
+                            cat > android/key.properties <<EOF
+storeFile=android/app/release.jks
+storePassword=$STORE_PASSWORD
+keyPassword=$KEY_PASSWORD
+keyAlias=$KEY_ALIAS
+EOF
+                            flutter build appbundle --release
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'mobile/build/app/outputs/bundle/release/app-release.aab', allowEmptyArchive: true
+                }
+                failure { script { env.FAILED_STAGE = 'Build Release AAB (signed)' } }
+                cleanup {
+                    dir('mobile') {
+                        sh 'rm -f android/key.properties android/app/release.jks'
+                    }
+                }
+            }
+        }
+
+        // Distribute / Play Store — ปิดไว้เป็นค่าเริ่มต้นเสมอ (ต้องพึ่งบริการภายนอกที่ไม่มีใน lab
+        // local นี้: Firebase App Distribution / Google Play service account) ตามกฎข้อ 7
+        stage('Distribute (disabled by default)') {
+            when {
+                branch 'main'
+                expression { return params.ENABLE_DISTRIBUTE == true }
+            }
+            steps {
+                echo 'Distribute stage is disabled in this lab environment (no Firebase/Play Store credentials configured).'
+            }
+        }
+    }
+
+    // Lab 10 task 5 — แจ้งเตือนทุกครั้งที่ build จบ (สำเร็จ/ล้มเหลว) พร้อม branch + build URL
+    // เลือก email-ext แทน Slack เพราะ lab นี้ไม่มี Slack workspace/token จริงให้ทดสอบ ในขณะที่
+    // อีเมลตรวจสอบผลได้จริงแบบ end-to-end ด้วย MailHog (SMTP catcher local, container "mailhog"
+    // อยู่ network เดียวกับ jenkins-lab01, ดู inbox ได้ที่ http://localhost:8025) — ตรงตามกฎ
+    // ข้อ 7 ที่ให้ปิด stage ที่พึ่งบริการภายนอกไว้เป็นค่าเริ่มต้น ส่วนนี้ใช้บริการ local ล้วนๆ
+    // จึงเปิดได้ตลอดโดยไม่ต้องมี flag ปิด/เปิด
+    post {
+        success {
+            emailext(
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})",
+                body: "Build SUCCESS\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
+        }
+        failure {
+            echo "Failed at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}"
+            emailext(
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME}) — ${env.FAILED_STAGE ?: env.STAGE_NAME}",
+                body: "Build FAILURE at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
+        }
+    }
+}
