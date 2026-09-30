@@ -178,9 +178,27 @@ EOF
         }
     }
 
+    // Lab 10 task 5 — แจ้งเตือนทุกครั้งที่ build จบ (สำเร็จ/ล้มเหลว) พร้อม branch + build URL
+    // เลือก email-ext แทน Slack เพราะ lab นี้ไม่มี Slack workspace/token จริงให้ทดสอบ ในขณะที่
+    // อีเมลตรวจสอบผลได้จริงแบบ end-to-end ด้วย MailHog (SMTP catcher local, container "mailhog"
+    // อยู่ network เดียวกับ jenkins-lab01, ดู inbox ได้ที่ http://localhost:8025) — ตรงตามกฎ
+    // ข้อ 7 ที่ให้ปิด stage ที่พึ่งบริการภายนอกไว้เป็นค่าเริ่มต้น ส่วนนี้ใช้บริการ local ล้วนๆ
+    // จึงเปิดได้ตลอดโดยไม่ต้องมี flag ปิด/เปิด
     post {
+        success {
+            emailext(
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})",
+                body: "Build SUCCESS\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
+        }
         failure {
             echo "Failed at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}"
+            emailext(
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME}) — ${env.FAILED_STAGE ?: env.STAGE_NAME}",
+                body: "Build FAILURE at stage: ${env.FAILED_STAGE ?: env.STAGE_NAME}\nJob: ${env.JOB_NAME}\nBranch: ${env.BRANCH_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}",
+                to: '$DEFAULT_RECIPIENTS'
+            )
         }
     }
 }
