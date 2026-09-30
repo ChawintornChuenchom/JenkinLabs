@@ -1,0 +1,19 @@
+# Lab 09 task 6 — SLO ของ pipeline เอง: 95% ของ build ต้องเสร็จภายใน 6 นาที วัดแบบ rolling 7 วัน
+# (คำนวณจาก histogram_quantile(0.95, jenkins_builds_duration_milliseconds_summary) ใน Grafana panel
+# "p95 build duration" — ไม่ผูกเป็น alert ตรงๆ เพราะ SLO burn-rate ต้องการ error-budget window
+# แยกต่างหาก ในที่นี้ตาม scope ของ lab คือ symptom-based alert บน queue wait time แทน)
+#
+# alert ตัวนี้ยิงเมื่อ "มี build ค้างอยู่ใน queue ต่อเนื่องนานเกิน 5 นาที" ซึ่งเป็นอาการ
+# (symptom) ของ capacity ไม่พอ ไม่ใช่สาเหตุ (cause) ดิบๆ เช่น CPU สูง — ตรงตามที่โจทย์บอกว่า
+# "a symptom of insufficient capacity, not a raw resource cause"
+groups:
+  - name: jenkins-slo
+    rules:
+      - alert: JenkinsQueueBacklog
+        expr: jenkins_queue_size_value > 0 and avg_over_time(jenkins_queue_size_value[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jenkins build queue backlog exceeds 2 minutes"
+          description: "{{ $value }} build(s) have been queued continuously for over 5 minutes -- Jenkins does not have enough concurrent agent capacity for current demand."
