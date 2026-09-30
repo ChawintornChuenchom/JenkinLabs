@@ -4,8 +4,10 @@
 pipeline {
     agent none
 
+    // ดู comment เดียวกันใน Jenkinsfile หลัก: options.timeout ระดับ pipeline นับเวลาที่ค้างรอ
+    // stage Approval ด้วยเสมอ — ตั้งยาวพอให้คนกด apply ทันจริง
     options {
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 2, unit: 'HOURS')
         disableConcurrentBuilds()
     }
 
